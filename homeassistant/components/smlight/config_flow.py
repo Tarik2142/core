@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from typing import Any, override
 
 import probatio
-from pysmlight import Api2
 from pysmlight.const import Devices
 from pysmlight.exceptions import SmlightAuthError, SmlightConnectionError
 
@@ -17,7 +16,6 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.selector import (
     SelectSelector,
@@ -28,6 +26,7 @@ from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .bluetooth import get_ble_scanner_mode
+from .client import SmClient, async_create_client
 from .const import CONF_BLE_SCANNER_MODE, DOMAIN, BLEScannerMode
 from .coordinator import SmConfigEntry
 
@@ -69,7 +68,15 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
 
     _host: str
     _device_name: str
-    client: Api2
+    client: SmClient
+    _client_host: str | None = None
+
+    async def _async_get_client(self) -> SmClient:
+        """Return the client of the device at the host (its API found once per host)."""
+        if self._client_host != self._host:
+            self.client = await async_create_client(self.hass, self._host)
+            self._client_host = self._host
+        return self.client
 
     @override
     async def async_step_user(
@@ -80,7 +87,6 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self._host = user_input[CONF_HOST]
-            self.client = Api2(self._host, session=async_get_clientsession(self.hass))
 
             try:
                 if not await self._async_check_auth_required(user_input):
@@ -151,12 +157,11 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
         self._host = discovery_info.host
 
         self.context["title_placeholders"] = {"name": self._device_name}
-        self.client = Api2(self._host, session=async_get_clientsession(self.hass))
 
         # fallback for legacy firmware older than v2.3.x
         if mac is None:
             try:
-                info = await self.client.get_info()
+                info = await (await self._async_get_client()).get_info()
             except SmlightConnectionError:
                 # User is likely running unsupported ESPHome firmware
                 return self.async_abort(reason="cannot_connect")
@@ -202,7 +207,6 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle reauth when API Authentication failed."""
 
         self._host = entry_data[CONF_HOST]
-        self.client = Api2(self._host, session=async_get_clientsession(self.hass))
 
         return await self.async_step_reauth_confirm()
 
@@ -213,7 +217,8 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             try:
-                await self.client.authenticate(
+                client = await self._async_get_client()
+                await client.authenticate(
                     user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
                 )
             except SmlightAuthError:
@@ -241,7 +246,6 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self._host = user_input[CONF_HOST]
-            self.client = Api2(self._host, session=async_get_clientsession(self.hass))
 
             check_input = {**entry.data, **user_input}
             try:
@@ -284,6 +288,7 @@ class SmlightConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_check_auth_required(self, user_input: dict[str, Any]) -> bool:
         """Check if auth required and attempt to authenticate."""
+        await self._async_get_client()
         if await self.client.check_auth_needed():
             if user_input.get(CONF_USERNAME) and user_input.get(CONF_PASSWORD):
                 return not await self.client.authenticate(

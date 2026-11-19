@@ -1,7 +1,9 @@
 """Infrared platform for SLZB-Ultima."""
 
-from typing import override
+import logging
+from typing import Any, override
 
+from pysmlight import Api3
 from pysmlight.const import Events as SmEvents
 from pysmlight.exceptions import SmlightError
 from pysmlight.models import IRPayload
@@ -21,6 +23,8 @@ from .coordinator import SmConfigEntry, SmDataUpdateCoordinator
 from .entity import SmEntity
 
 PARALLEL_UPDATES = 1
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -83,11 +87,26 @@ class SmInfraredReceiverEntity(SmEntity, InfraredReceiverEntity):
     async def async_added_to_hass(self) -> None:
         """Register SSE callbacks when entity is added to hass."""
         await super().async_added_to_hass()
-        self.async_on_remove(
-            self.coordinator.client.sse.register_callback(
-                SmEvents.IR_CODE, self._handle_ir_code
+        client = self.coordinator.client
+        if isinstance(client, Api3):
+            self.async_on_remove(client.live.subscribe("ir", self._handle_ir_v3))
+        else:
+            self.async_on_remove(
+                client.sse.register_callback(SmEvents.IR_CODE, self._handle_ir_code)
             )
-        )
+
+    @callback
+    def _handle_ir_v3(self, data: dict[str, Any], origin: str | None) -> None:
+        """Handle a code of resource ir (API v3): raw timings in 50 us ticks."""
+        last = data.get("last")
+        if not isinstance(last, dict) or not last.get("raw"):
+            return
+        try:
+            timings = IRPayload(code=last["raw"]).to_raw_timings()
+        except ValueError as err:
+            _LOGGER.warning("Received IR code %s not decoded: %s", last["raw"], err)
+            return
+        self._handle_ir_code(timings)
 
     @callback
     def _handle_ir_code(self, timings: list[int]) -> None:

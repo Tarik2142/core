@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, override
 
+from pysmlight import Api3
 from pysmlight.const import Events as SmEvents
 from pysmlight.models import Firmware, FirmwareList, Info
 from pysmlight.sse import MessageEvent
@@ -110,6 +111,7 @@ class SmUpdateEntity(SmEntity, UpdateEntity):
         self._attr_unique_id = f"{coordinator.unique_id}-{device}"
 
         self._finished_event = asyncio.Event()
+        self._failed = False
         self._firmware: Firmware | None = None
         self._unload: list[Callable[[], None]] = []
         self.idx = idx
@@ -179,26 +181,30 @@ class SmUpdateEntity(SmEntity, UpdateEntity):
 
     def register_callbacks(self) -> None:
         """Register callbacks for SSE update events."""
+        client = self.coordinator.client
+        if isinstance(client, Api3):
+            # API v3: the core update is resource ota, a radio's flash radioflash
+            if self.entity_description.key == ZB_UPDATE_ENTITY.key:
+                self._unload.append(
+                    client.live.subscribe("radioflash", self._radio_flash_v3)
+                )
+            else:
+                self._unload.append(client.live.subscribe("ota", self._ota_v3))
+            return
         self._unload.append(
-            self.coordinator.client.sse.register_callback(
-                SmEvents.ZB_FW_prgs, self._update_progress
-            )
+            client.sse.register_callback(SmEvents.ZB_FW_prgs, self._update_progress)
         )
         self._unload.append(
-            self.coordinator.client.sse.register_callback(
-                SmEvents.FW_UPD_done, self._update_finished
-            )
+            client.sse.register_callback(SmEvents.FW_UPD_done, self._update_finished)
         )
         if self.coordinator.legacy_api == 1:
             self._unload.append(
-                self.coordinator.client.sse.register_callback(
+                client.sse.register_callback(
                     SmEvents.ESP_UPD_done, self._update_finished
                 )
             )
         self._unload.append(
-            self.coordinator.client.sse.register_callback(
-                SmEvents.ZB_FW_err, self._update_failed
-            )
+            client.sse.register_callback(SmEvents.ZB_FW_err, self._update_failed)
         )
 
     @override
@@ -224,6 +230,37 @@ class SmUpdateEntity(SmEntity, UpdateEntity):
             return notes
 
         return None
+
+    def _update_state_v3(
+        self, state: Any, percent: Any, running: tuple[str, ...]
+    ) -> None:
+        """Follow an update on API v3."""
+        if state == "done":
+            self._update_done()
+        elif state == "error":
+            self._failed = True
+            self._update_done()
+        elif state in running and isinstance(percent, int):
+            self._attr_update_percentage = percent
+            self.async_write_ha_state()
+
+    @callback
+    def _ota_v3(self, data: dict[str, Any], origin: str | None) -> None:
+        """Handle a push of resource ota (core firmware)."""
+        self._update_state_v3(
+            data.get("state"), data.get("percent"), ("downloading", "writing")
+        )
+
+    @callback
+    def _radio_flash_v3(self, data: dict[str, Any], origin: str | None) -> None:
+        """Handle a push of resource radioflash (a radio's firmware)."""
+        if data.get("idx") != self.idx:
+            return
+        self._update_state_v3(
+            data.get("state"),
+            data.get("percent"),
+            ("downloading", "bootloader", "erasing", "flashing", "switching"),
+        )
 
     @callback
     def _update_progress(self, event: MessageEvent) -> None:
@@ -286,6 +323,12 @@ class SmUpdateEntity(SmEntity, UpdateEntity):
 
                 # block until update finished event received
                 await self._finished_event.wait()
+                if self._failed:
+                    raise HomeAssistantError(
+                        translation_domain=DOMAIN,
+                        translation_key="firmware_update_failed",
+                        translation_placeholders={"device_name": str(self.name)},
+                    )
 
                 # allow time for SLZB-06 to reboot before updating coordinator data
                 try:
@@ -308,3 +351,4 @@ class SmUpdateEntity(SmEntity, UpdateEntity):
                 self._update_done()
                 self.coordinator.in_progress = False
                 self._finished_event.clear()
+                self._failed = False

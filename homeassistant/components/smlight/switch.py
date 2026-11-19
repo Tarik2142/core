@@ -99,7 +99,7 @@ class SmSwitch(SmEntity, SwitchEntity):
         """Run when entity about to be added to hass."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self.coordinator.client.sse.register_settings_cb(
+            self.coordinator.events.register_settings_cb(
                 self.entity_description.setting, self.event_callback
             )
         )

@@ -1,14 +1,16 @@
 """SMLIGHT SLZB device integration."""
 
-from pysmlight import Api2
+from pysmlight import Api3
+from pysmlight.exceptions import SmlightConnectionError
 
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .bluetooth import async_setup_ble_scanner
+from .client import async_create_client
 from .const import DOMAIN
 from .coordinator import (
     SmConfigEntry,
@@ -39,7 +41,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: SmConfigEntry) -> None:
     """Set up SMLIGHT from a config entry."""
-    client = Api2(host=entry.data[CONF_HOST], session=async_get_clientsession(hass))
+    try:
+        client = await async_create_client(hass, entry.data[CONF_HOST])
+    except SmlightConnectionError as err:
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect_device",
+            translation_placeholders={"error": str(err)},
+        ) from err
 
     data_coordinator = SmDataUpdateCoordinator(hass, entry, client)
     firmware_coordinator = SmFirmwareUpdateCoordinator(hass, entry, client)
@@ -49,7 +58,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmConfigEntry) -> None:
 
     info = data_coordinator.data.info
 
-    if info.legacy_api < 2:
+    if isinstance(client, Api3):
+        # API v3: the device pushes every change of a resource over its WebSocket;
+        # the client signs out of the device when the entry unloads
+        entry.async_on_unload(client.close)
+        entry.async_create_background_task(
+            hass, client.live.run(), "smlight-live-client"
+        )
+    elif info.legacy_api < 2:
         entry.async_create_background_task(
             hass, client.sse.client(), "smlight-sse-client"
         )

@@ -2,9 +2,9 @@
 
 from _collections_abc import Callable
 from dataclasses import dataclass
-from typing import override
+from typing import Any, override
 
-from pysmlight import Sensors
+from pysmlight import Api3, Sensors
 from pysmlight.const import Events as SmEvents
 from pysmlight.sse import MessageEvent
 
@@ -116,11 +116,20 @@ class SmInternetSensorEntity(SmEntity, BinarySensorEntity):
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
         await super().async_added_to_hass()
-        self.async_on_remove(
-            self.coordinator.client.sse.register_callback(
-                SmEvents.EVENT_INET_STATE, self.internet_callback
+        client = self.coordinator.client
+        if isinstance(client, Api3):
+            # resource "internet": fetched when the link is (re)made, a check's result pushed
+            self.async_on_remove(client.live.track("internet"))
+            self.async_on_remove(
+                client.live.subscribe("internet", self.internet_v3_callback)
             )
-        )
+            self.async_on_remove(client.live.on_resync(self.internet_v3_fetched))
+        else:
+            self.async_on_remove(
+                client.sse.register_callback(
+                    SmEvents.EVENT_INET_STATE, self.internet_callback
+                )
+            )
         await self.async_update()
 
     @callback
@@ -128,6 +137,24 @@ class SmInternetSensorEntity(SmEntity, BinarySensorEntity):
         """Update internet state from event."""
         self._attr_is_on = event.data == "ok"
         self.async_write_ha_state()
+
+    def _internet_state(self, state: Any) -> None:
+        """Take a result of API v3 ("checking" / "unknown": none yet)."""
+        if state in ("ok", "none"):
+            self._attr_is_on = state == "ok"
+            self.async_write_ha_state()
+
+    @callback
+    def internet_v3_callback(self, data: dict[str, Any], origin: str | None) -> None:
+        """Update internet state from a push of resource internet."""
+        self._internet_state(data.get("state"))
+
+    @callback
+    def internet_v3_fetched(self) -> None:
+        """Update internet state from resource internet fetched again."""
+        client = self.coordinator.client
+        if isinstance(client, Api3) and (state := client.live.state("internet")):
+            self._internet_state(state.get("state"))
 
     @property
     @override
@@ -139,6 +166,11 @@ class SmInternetSensorEntity(SmEntity, BinarySensorEntity):
     async def async_update(self) -> None:
         """Update the sensor.
 
-        This is an async api, device will respond with EVENT_INET_STATE event.
+        This is an async api, device will respond with EVENT_INET_STATE event
+        (API v2) or a push of resource internet (API v3).
         """
-        await self.coordinator.client.get_param("inetState")
+        client = self.coordinator.client
+        if isinstance(client, Api3):
+            await client.internet.check()
+        else:
+            await client.get_param("inetState")

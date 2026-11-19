@@ -102,8 +102,13 @@ def mock_setup_entry() -> Generator[AsyncMock]:
 def mock_smlight_client(request: pytest.FixtureRequest) -> Generator[MagicMock]:
     """Mock the SMLIGHT API client."""
     with (
-        patch("homeassistant.components.smlight.Api2", autospec=True) as smlight_mock,
-        patch("homeassistant.components.smlight.config_flow.Api2", new=smlight_mock),
+        patch(
+            "homeassistant.components.smlight.client.Api2", autospec=True
+        ) as smlight_mock,
+        patch(
+            "homeassistant.components.smlight.client.detect_api_version",
+            return_value=2,
+        ),
     ):
         api = smlight_mock.return_value
         api.host = MOCK_HOST

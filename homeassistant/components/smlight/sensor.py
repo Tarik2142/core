@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from itertools import chain
 from typing import override
 
-from pysmlight import Info, Sensors
+from pysmlight import Api3, Info, Sensors
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -78,15 +78,6 @@ SENSORS: list[SmSensorEntityDescription] = [
         value_fn=lambda x: x.esp32_temp,
     ),
     SmSensorEntityDescription(
-        key="zigbee_temperature",
-        translation_key="zigbee_temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        value_fn=lambda x: x.zb_temp,
-    ),
-    SmSensorEntityDescription(
         key="ram_usage",
         translation_key="ram_usage",
         device_class=SensorDeviceClass.DATA_SIZE,
@@ -104,6 +95,17 @@ SENSORS: list[SmSensorEntityDescription] = [
     ),
 ]
 
+
+# API v2 reports an estimate of the radio's temperature, API v3 none (it is not measured)
+ZB_TEMP_SENSOR = SmSensorEntityDescription(
+    key="zigbee_temperature",
+    translation_key="zigbee_temperature",
+    device_class=SensorDeviceClass.TEMPERATURE,
+    native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+    value_fn=lambda x: x.zb_temp,
+)
 
 EXTRA_SENSOR = SmSensorEntityDescription(
     key="zigbee_temperature_2",
@@ -162,6 +164,9 @@ async def async_setup_entry(
         for idx, radio in enumerate(coordinator.data.info.radios)
         if radio.zb_type not in ZWAVE_TYPES
     )
+
+    if not isinstance(coordinator.client, Api3):
+        entities.append(SmSensorEntity(coordinator, ZB_TEMP_SENSOR))
 
     if coordinator.data.sensors.zb_temp2 is not None:
         entities.append(SmSensorEntity(coordinator, EXTRA_SENSOR))

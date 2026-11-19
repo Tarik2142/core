@@ -93,7 +93,7 @@ class SmLightEntity(SmEntity, LightEntity):
         """Register SSE page callback when entity is added to hass."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self.coordinator.client.sse.register_page_cb(
+            self.coordinator.events.register_page_cb(
                 Pages.API2_PAGE_AMBILIGHT, self._handle_ambilight_changes
             )
         )

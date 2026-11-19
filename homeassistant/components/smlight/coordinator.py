@@ -2,13 +2,14 @@
 
 from abc import abstractmethod
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, override
 
-from pysmlight import Api2, Info, Sensors
+from pysmlight import Api3, Info, LiveClient, Sensors
 from pysmlight.const import Settings, SettingsProp
 from pysmlight.exceptions import SmlightAuthError, SmlightConnectionError
 from pysmlight.models import AmbilightPayload, FirmwareList
+from pysmlight.sse import sseClient
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
@@ -23,6 +24,7 @@ from homeassistant.helpers.device_registry import (
 from homeassistant.helpers.issue_registry import IssueSeverity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .client import SmClient
 from .const import (
     ATTR_MANUFACTURER,
     DOMAIN,
@@ -77,7 +79,7 @@ class SmBaseDataUpdateCoordinator[_DataT](DataUpdateCoordinator[_DataT]):
     config_entry: SmConfigEntry
 
     def __init__(
-        self, hass: HomeAssistant, config_entry: SmConfigEntry, client: Api2
+        self, hass: HomeAssistant, config_entry: SmConfigEntry, client: SmClient
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -91,6 +93,13 @@ class SmBaseDataUpdateCoordinator[_DataT](DataUpdateCoordinator[_DataT]):
         self.client = client
         self.unique_id: str | None = None
         self.legacy_api: int = 0
+
+    @property
+    def events(self) -> LiveClient | sseClient:
+        """Settings and page change events: the WebSocket of API v3, SSE of API v2."""
+        if isinstance(self.client, Api3):
+            return self.client.live
+        return self.client.sse
 
     @override
     async def _async_setup(self) -> None:
@@ -184,11 +193,15 @@ class SmDataUpdateCoordinator(SmBaseDataUpdateCoordinator[SmData]):
         self.async_set_updated_data(self.data)
 
     def update_ambilight(self, changes: dict) -> None:
-        """Update the ambilight state from event."""
+        """Update the ambilight state from event.
+
+        An event carries only the settings that changed: the others keep their state.
+        """
         for key in ("ultLedColor", "ultLedColor2"):
             if isinstance(color := changes.get(key), int):
                 changes[key] = f"#{color:06x}"
-        self.data.sensors.ambilight = AmbilightPayload(**changes)
+        current = self.data.sensors.ambilight or AmbilightPayload()
+        self.data.sensors.ambilight = replace(current, **changes)
         self.async_set_updated_data(self.data)
 
     @override
@@ -208,7 +221,7 @@ class SmFirmwareUpdateCoordinator(SmBaseDataUpdateCoordinator[SmFwData]):
     """Class to manage fetching SMLIGHT firmware update data from cloud."""
 
     def __init__(
-        self, hass: HomeAssistant, config_entry: SmConfigEntry, client: Api2
+        self, hass: HomeAssistant, config_entry: SmConfigEntry, client: SmClient
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(hass, config_entry, client)

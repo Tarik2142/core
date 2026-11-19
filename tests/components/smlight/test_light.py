@@ -346,3 +346,23 @@ async def test_ambilight_connection_error(
 
     state = hass.states.get(entity_id)
     assert state.state == STATE_ON
+
+
+async def test_light_event_of_one_setting(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_ultima_client: MagicMock,
+) -> None:
+    """An event carries only what changed: the other settings keep their state."""
+    await setup_integration(hass, mock_config_entry)
+    entity_id = "light.mock_title_ambilight"
+    fire_ambi = _build_fire_sse_ambilight(hass, mock_ultima_client)
+
+    await fire_ambi({"ultLedMode": 3, "ultLedBri": 158, "ultLedColor": 0x7FACFF})
+    await fire_ambi({"ultLedBri": 33})
+
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes["brightness"] == 33
+    assert state.attributes["effect"] == "Rainbow"
+    assert state.attributes["rgb_color"] == (127, 172, 255)
