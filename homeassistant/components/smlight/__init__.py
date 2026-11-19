@@ -3,7 +3,7 @@
 from typing import Any
 
 from pysmlight import Api3
-from pysmlight.const import Pages
+from pysmlight.const import SEL_FW_CHANNEL, Pages
 from pysmlight.exceptions import SmlightConnectionError
 
 from homeassistant.const import CONF_HOST, Platform
@@ -30,6 +30,7 @@ PLATFORMS: list[Platform] = [
     Platform.BUTTON,
     Platform.INFRARED,
     Platform.LIGHT,
+    Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
     Platform.UPDATE,
@@ -77,6 +78,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmConfigEntry) -> None:
     def _async_update_settings_changed(changes: dict[str, Any]) -> None:
         """The update channel changed on the device: fetch its firmware lists again."""
         if "fw_ch" in changes:
+            if (channel := SEL_FW_CHANNEL.get(changes["fw_ch"])) is not None:
+                data_coordinator.update_fw_channel(channel)
             entry.async_create_background_task(
                 hass, firmware_coordinator.async_refresh(), "smlight-firmware-channel"
             )

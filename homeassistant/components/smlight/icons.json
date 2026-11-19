@@ -8,6 +8,11 @@
         "default": "mdi:memory-arrow-down"
       }
     },
+    "select": {
+      "update_channel": {
+        "default": "mdi:source-branch"
+      }
+    },
     "sensor": {
       "device_mode": {
         "default": "mdi:connection"

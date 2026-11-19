@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any, override
 
 from pysmlight import Api3, FirmwareCatalog, Info, LiveClient, Sensors
+from pysmlight.catalog import FwChannel
 from pysmlight.const import Settings, SettingsProp
 from pysmlight.exceptions import SmlightAuthError, SmlightConnectionError
 from pysmlight.models import AmbilightPayload, FirmwareList
@@ -190,6 +191,11 @@ class SmDataUpdateCoordinator(SmBaseDataUpdateCoordinator[SmData]):
         prop = SettingsProp[setting.name].value
         setattr(self.data.sensors, prop, value)
 
+        self.async_set_updated_data(self.data)
+
+    def update_fw_channel(self, channel: FwChannel) -> None:
+        """Update the update channel chosen on the device from event."""
+        self.data.info.sel_fw_channel = channel
         self.async_set_updated_data(self.data)
 
     def update_ambilight(self, changes: dict) -> None:

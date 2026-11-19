@@ -19,6 +19,7 @@ import pytest
 from pytest_homeassistant.common import (
     MockConfigEntry,
     async_fire_time_changed,
+    async_load_json_object_fixture,
     load_json_array_fixture,
     load_json_object_fixture,
 )
@@ -72,9 +73,9 @@ def mock_v3_client() -> Generator[MagicMock]:
         api = api3.return_value
         api.detect = detect
         api.host = MOCK_HOST
-        api.get_info.return_value = Info.from_dict(
-            load_json_object_fixture("info.json", DOMAIN)
-        )
+        info = Info.from_dict(load_json_object_fixture("info.json", DOMAIN))
+        info.sel_fw_channel = "release"  # API v3 always reports updates.channel
+        api.get_info.return_value = info
         sensors = Sensors.from_dict(load_json_object_fixture("sensors.json", DOMAIN))
         sensors.zb_temp = sensors.zb_temp2 = None  # API v3 has no radio temperature
         api.get_sensors.return_value = sensors
@@ -398,3 +399,88 @@ async def test_update_channel_changed_on_the_device(
     await hass.async_block_till_done()
 
     assert mock_v3_client.get_firmware_version.await_count == 2
+
+
+SELECT = "select.mock_title_update_channel"
+
+
+async def test_update_channel_select(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_v3_client: MagicMock,
+) -> None:
+    """The update channel of the device: shown, chosen, followed when changed there."""
+    await setup_integration(hass, mock_config_entry)
+    state = hass.states.get(SELECT)
+    assert state.state == "release"
+    assert state.attributes["options"] == ["release", "dev", "any"]
+
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {TargetKey.ENTITY_ID: SELECT, "option": "dev"},
+        blocking=True,
+    )
+    mock_v3_client.set_fw_channel.assert_awaited_once_with("dev")
+    assert hass.states.get(SELECT).state == "dev"
+
+    # changed on the device (its web UI, MQTT): the page event of resource updates
+    (changed,) = [
+        c.args[1]
+        for c in mock_v3_client.live.register_page_cb.call_args_list
+        if c.args[0] == Pages.API2_PAGE_SETTINGS_OTA
+    ]
+    changed({"fw_ch": 0})
+    await hass.async_block_till_done()
+    assert hass.states.get(SELECT).state == "any"
+    changed({"fw_ch": 7})  # no channel of API v2: the shown one stays
+    await hass.async_block_till_done()
+    assert hass.states.get(SELECT).state == "any"
+
+
+async def test_update_channel_select_refused(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_v3_client: MagicMock,
+) -> None:
+    """A channel the device could not take keeps the shown one."""
+    await setup_integration(hass, mock_config_entry)
+    mock_v3_client.set_fw_channel.side_effect = SmlightConnectionError("timeout")
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "select",
+            "select_option",
+            {TargetKey.ENTITY_ID: SELECT, "option": "any"},
+            blocking=True,
+        )
+    assert hass.states.get(SELECT).state == "release"
+
+
+async def test_update_channel_select_needs_api_v3(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_smlight_client: MagicMock,
+) -> None:
+    """A device on API v2 gets no update channel select."""
+    info = Info.from_dict(
+        await async_load_json_object_fixture(hass, "info.json", DOMAIN)
+    )
+    info.sel_fw_channel = "release"
+    mock_smlight_client.get_info.side_effect = None
+    mock_smlight_client.get_info.return_value = info
+    await setup_integration(hass, mock_config_entry)
+
+    assert hass.states.get(SELECT) is None
+
+
+async def test_update_channel_select_needs_the_channel(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_v3_client: MagicMock,
+) -> None:
+    """No select while the device reports no channel."""
+    mock_v3_client.get_info.return_value.sel_fw_channel = None
+    await setup_integration(hass, mock_config_entry)
+
+    assert hass.states.get(SELECT) is None
