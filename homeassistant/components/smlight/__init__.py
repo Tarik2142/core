@@ -1,10 +1,13 @@
 """SMLIGHT SLZB device integration."""
 
+from typing import Any
+
 from pysmlight import Api3
+from pysmlight.const import Pages
 from pysmlight.exceptions import SmlightConnectionError
 
 from homeassistant.const import CONF_HOST, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
@@ -68,6 +71,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmConfigEntry) -> None:
     elif info.legacy_api < 2:
         entry.async_create_background_task(
             hass, client.sse.client(), "smlight-sse-client"
+        )
+
+    @callback
+    def _async_update_settings_changed(changes: dict[str, Any]) -> None:
+        """The update channel changed on the device: fetch its firmware lists again."""
+        if "fw_ch" in changes:
+            entry.async_create_background_task(
+                hass, firmware_coordinator.async_refresh(), "smlight-firmware-channel"
+            )
+
+    if info.legacy_api < 2:
+        entry.async_on_unload(
+            data_coordinator.events.register_page_cb(
+                Pages.API2_PAGE_SETTINGS_OTA, _async_update_settings_changed
+            )
         )
 
     if info.ble is not None and (

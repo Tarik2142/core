@@ -5,7 +5,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, replace
 from typing import Any, override
 
-from pysmlight import Api3, Info, LiveClient, Sensors
+from pysmlight import Api3, FirmwareCatalog, Info, LiveClient, Sensors
 from pysmlight.const import Settings, SettingsProp
 from pysmlight.exceptions import SmlightAuthError, SmlightConnectionError
 from pysmlight.models import AmbilightPayload, FirmwareList
@@ -247,19 +247,25 @@ class SmFirmwareUpdateCoordinator(SmBaseDataUpdateCoordinator[SmFwData]):
 
         esp_firmware: FirmwareList = []
         zb_firmware: list[FirmwareList] = []
+        # The update channel chosen on the device: its lists as the device's web UI
+        # shows them. Firmware that does not report it: the channel of its build.
+        selected = info.sel_fw_channel
+        channel = "any" if selected else info.fw_channel
 
         try:
             esp_firmware = await self.client.get_firmware_version(
-                info.fw_channel, device=info.model
+                channel, device=info.model
             )
             zb_firmware.extend(
                 [
                     await self.client.get_firmware_version(
-                        info.fw_channel,
+                        channel,
                         device=info.model,
                         mode="zigbee",
                         zb_type=r.zb_type,
                         idx=idx,
+                        hw=info.hw_rev,
+                        device_type=info.dev_type,
                     )
                     if r.zb_type != -1
                     else []
@@ -269,6 +275,15 @@ class SmFirmwareUpdateCoordinator(SmBaseDataUpdateCoordinator[SmFwData]):
 
         except SmlightConnectionError as err:
             LOGGER.error("Error fetching firmware catalog for %s: %s", self.name, err)
+
+        if selected:
+            esp_firmware = [
+                fw for fw in esp_firmware if FirmwareCatalog.in_channel(fw, selected)
+            ]
+            zb_firmware = [
+                [fw for fw in radio if FirmwareCatalog.in_channel(fw, selected)]
+                for radio in zb_firmware
+            ]
 
         return SmFwData(
             info=info,

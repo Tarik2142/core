@@ -209,8 +209,11 @@ async def test_ambilight_page_events(
     mock_v3_client.get_info.return_value = MOCK_ULTIMA
     await setup_integration(hass, mock_config_entry)
 
-    (page, changed) = mock_v3_client.live.register_page_cb.call_args.args
-    assert page == Pages.API2_PAGE_AMBILIGHT
+    (changed,) = [
+        c.args[1]
+        for c in mock_v3_client.live.register_page_cb.call_args_list
+        if c.args[0] == Pages.API2_PAGE_AMBILIGHT
+    ]
     changed({"ultLedMode": 0, "ultLedBri": 80, "ultLedColor": 0xFF0000})
     await hass.async_block_till_done()
 
@@ -375,3 +378,23 @@ async def test_config_flow_zeroconf_asks_the_device_on_confirm(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     mock_v3_client.detect.assert_awaited_once()
+
+
+async def test_update_channel_changed_on_the_device(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_v3_client: MagicMock,
+) -> None:
+    """API v3: the change of updates.channel (page 7 fw_ch) fetches the lists again."""
+    await setup_integration(hass, mock_config_entry)
+    (changed,) = [
+        c.args[1]
+        for c in mock_v3_client.live.register_page_cb.call_args_list
+        if c.args[0] == Pages.API2_PAGE_SETTINGS_OTA
+    ]
+    mock_v3_client.get_firmware_version.reset_mock()
+
+    changed({"fw_ch": 1})
+    await hass.async_block_till_done()
+
+    assert mock_v3_client.get_firmware_version.await_count == 2

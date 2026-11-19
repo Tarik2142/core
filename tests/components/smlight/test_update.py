@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call, patch
 
 from freezegun.api import FrozenDateTimeFactory
 from pysmlight import Firmware, Info, Radio
-from pysmlight.const import Events as SmEvents
+from pysmlight.const import Events as SmEvents, Pages
 from pysmlight.exceptions import SmlightAuthError, SmlightConnectionError
 from pysmlight.sse import MessageEvent
 import pytest
@@ -312,8 +312,18 @@ async def test_unsupported_radio_catalog(
             mode="zigbee",
             zb_type=radio_type,
             idx=radio_idx,
+            hw=None,
+            device_type=None,
         ),
-        call("dev", device="SLZB-Ultima3", mode="zigbee", zb_type=5, idx=2),
+        call(
+            "dev",
+            device="SLZB-Ultima3",
+            mode="zigbee",
+            zb_type=5,
+            idx=2,
+            hw=None,
+            device_type=None,
+        ),
     ]
     assert set(hass.states.async_entity_ids(UPDATE_DOMAIN)) == {
         "update.mock_title_core_firmware",
@@ -824,3 +834,69 @@ async def test_update_firmware_specific_version_invalid(
     mock_smlight_client.fw_update.assert_not_called()
     assert exc_info.value.translation_domain == DOMAIN
     assert exc_info.value.translation_key == translation_key
+
+
+@pytest.mark.parametrize(
+    ("channel", "latest_version"),
+    [("release", "20250201"), ("dev", "20240315"), ("any", "20250201")],
+)
+async def test_update_channel_of_the_device(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_smlight_client: MagicMock,
+    channel: str,
+    latest_version: str,
+) -> None:
+    """The update channel chosen on the device filters the lists as its web UI does."""
+    info = Info.from_dict(
+        await async_load_json_object_fixture(hass, "info.json", DOMAIN)
+    )
+    info.sel_fw_channel = channel
+    info.dev_type = 3
+    info.hw_rev = 104
+    mock_smlight_client.get_info.side_effect = None
+    mock_smlight_client.get_info.return_value = info
+
+    await setup_integration(hass, mock_config_entry)
+
+    assert mock_smlight_client.get_firmware_version.await_args_list == [
+        call("any", device="SLZB-06p7"),
+        call(
+            "any",
+            device="SLZB-06p7",
+            mode="zigbee",
+            zb_type=0,
+            idx=0,
+            hw=104,
+            device_type=3,
+        ),
+    ]
+    state = hass.states.get("update.mock_title_zigbee_firmware")
+    assert state.attributes[ATTR_LATEST_VERSION] == latest_version
+    # the core list has releases only: none of them on the dev channel
+    state = hass.states.get("update.mock_title_core_firmware")
+    expected_core = None if channel == "dev" else "v2.7.5"
+    assert state.attributes[ATTR_LATEST_VERSION] == expected_core
+
+
+async def test_update_channel_changed_on_the_device(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_smlight_client: MagicMock,
+) -> None:
+    """A change of the update channel on the device fetches the lists again."""
+    await setup_integration(hass, mock_config_entry)
+    changed = next(
+        c.args[1]
+        for c in mock_smlight_client.sse.register_page_cb.call_args_list
+        if c.args[0] == Pages.API2_PAGE_SETTINGS_OTA
+    )
+    mock_smlight_client.get_firmware_version.reset_mock()
+
+    changed({"enabled": True})  # the automatic radio updates: no list changes
+    await hass.async_block_till_done()
+    mock_smlight_client.get_firmware_version.assert_not_awaited()
+
+    changed({"fw_ch": 2})
+    await hass.async_block_till_done()
+    assert mock_smlight_client.get_firmware_version.await_count == 2  # core + radio
